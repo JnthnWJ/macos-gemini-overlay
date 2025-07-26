@@ -39,7 +39,9 @@ class AppWindow(NSWindow):
 
     # Required to capture "Command+..." sequences.
     def keyDown_(self, event):
-        self.delegate().keyDown_(event)
+        delegate = self.delegate()
+        if delegate is not None:
+            delegate.keyDown_(event)
 
 
 # Custom view (contains click-and-drag area on top sliver of overlay).
@@ -189,8 +191,12 @@ class AppDelegate(NSObject):
             NSEventMaskLeftMouseDown,  # Monitor left mouse-down events
             self.handleLocalMouseEvent  # Handler method
         )
+        # Load the custom launch trigger if the user set it.
+        load_custom_launcher_trigger()
+        # Set the delegate of the window to this parent application BEFORE starting event processing.
+        self.window.setDelegate_(self)
         # Create the event tap for key-down events
-        tap = CGEventTapCreate(
+        self.event_tap = CGEventTapCreate(
             kCGSessionEventTap, # Tap at the session level
             kCGHeadInsertEventTap, # Insert at the head of the event queue
             kCGEventTapOptionDefault, # Actively filter events
@@ -198,18 +204,20 @@ class AppDelegate(NSObject):
             global_show_hide_listener(self), # Your callback function
             None # Optional user info (refcon)
         )
-        if tap:
-            # Integrate the tap into the run loop
-            source = CFMachPortCreateRunLoopSource(None, tap, 0)
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
-            CGEventTapEnable(tap, True)
-            CFRunLoopRun() # Start the run loop
+        if self.event_tap:
+            # Integrate the tap into NSApplication's main run loop (not a separate CFRunLoop)
+            self.event_tap_source = CFMachPortCreateRunLoopSource(None, self.event_tap, 0)
+            CFRunLoopAddSource(CFRunLoopGetMain(), self.event_tap_source, kCFRunLoopCommonModes)
+            CGEventTapEnable(self.event_tap, True)
+
+            # Set up a timer to monitor and re-enable the event tap if it gets disabled
+            self.tap_monitor_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                1.0, self, 'monitorEventTap:', None, True
+            )
+
+            print("Event tap successfully integrated into main run loop", flush=True)
         else:
             print("Failed to create event tap. Check Accessibility permissions.")
-        # Load the custom launch trigger if the user set it.
-        load_custom_launcher_trigger()
-        # Set the delegate of the window to this parent application.
-        self.window.setDelegate_(self)
         # Make sure this window is shown and focused.
         self.showWindow_(None)
 
@@ -415,3 +423,10 @@ class AppDelegate(NSObject):
         })();
         """
         self.webview.evaluateJavaScript_completionHandler_(js_focus, None)
+
+    # Monitor the event tap and re-enable it if it gets disabled
+    def monitorEventTap_(self, timer):
+        if hasattr(self, 'event_tap') and self.event_tap:
+            if not CGEventTapIsEnabled(self.event_tap):
+                print("Event tap was disabled, re-enabling...", flush=True)
+                CGEventTapEnable(self.event_tap, True)
