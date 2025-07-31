@@ -185,15 +185,28 @@ def global_show_hide_listener(app):
         if event_type == kCGEventKeyDown:
             keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
             flags = CGEventGetFlags(event) & LAUNCHER_TRIGGER_MASK
+
+            # Handle setting new trigger
             if (None in set(LAUNCHER_TRIGGER.values())) and handle_new_trigger:
                 print("  received keys, establishing new trigger..", flush=True)
                 handle_new_trigger(event, flags, keycode)
                 return None
-            elif (flags == LAUNCHER_TRIGGER["flags"]) and (keycode == LAUNCHER_TRIGGER["key"]):
+
+            # Early return for events that can't possibly be the launcher trigger
+            # This optimization reduces processing overhead for common keys like Return
+            if flags == 0 and keycode != LAUNCHER_TRIGGER["key"]:
+                # No modifier keys pressed and not the trigger key - pass through immediately
+                return event
+
+            # Only intercept events that match the launcher trigger exactly
+            if (flags == LAUNCHER_TRIGGER["flags"]) and (keycode == LAUNCHER_TRIGGER["key"]):
                 if app.window.isKeyWindow():
                     app.hideWindow_(None)
                 else:
                     app.showWindow_(None)
                 return None
+
+        # Return the event unmodified for all other cases
+        # This ensures normal keyboard events (like Return) work properly in the WebView
         return event
     return listener
