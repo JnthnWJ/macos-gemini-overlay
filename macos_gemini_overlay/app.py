@@ -123,11 +123,12 @@ class AppDelegate(NSObject):
         self.webview.loadRequest_(request)
         # Set self as navigation delegate to know when page loads
         self.webview.setNavigationDelegate_(self)
-        # Set up script message handler for background color changes
+        # Set up script message handlers for background color changes and debug logging
         configuration = self.webview.configuration()
         user_content_controller = configuration.userContentController()
         user_content_controller.addScriptMessageHandler_name_(self, "backgroundColorHandler")
-        # Inject JavaScript to monitor background color changes
+        user_content_controller.addScriptMessageHandler_name_(self, "debugLogger")
+        # Inject JavaScript to monitor background color changes and debug focus/DOM issues
         script = """
             function sendBackgroundColor() {
                 var bgColor = window.getComputedStyle(document.body).backgroundColor;
@@ -135,6 +136,184 @@ class AppDelegate(NSObject):
             }
             window.addEventListener('load', sendBackgroundColor);
             new MutationObserver(sendBackgroundColor).observe(document.body, { attributes: true, attributeFilter: ['style'] });
+
+            // DEBUG: Send logs to Python instead of console
+            function debugLog(message) {
+                try {
+                    window.webkit.messageHandlers.debugLogger.postMessage(message);
+                } catch(e) {
+                    console.log('[DEBUG]', message);
+                }
+            }
+
+            // DEBUG: Comprehensive logging for Enter key issue
+            let enterPressCount = 0;
+            let lastFocusedElement = null;
+            let textareaInstances = new Set();
+
+            function logDetailedState(context) {
+                const textareas = document.querySelectorAll('textarea');
+                const promptSelectors = '[aria-label="Enter a prompt here"], [data-placeholder="Ask Gemini"]';
+                const promptElement = document.querySelector(promptSelectors);
+                const activeEl = document.activeElement;
+
+                // Look for submit buttons and form elements
+                const submitButtons = document.querySelectorAll('button[type="submit"], button[aria-label*="Send"], button[data-testid*="send"], [role="button"][aria-label*="Send"]');
+                const sendButtons = document.querySelectorAll('button:not([disabled])').length;
+
+                const message = `${context} - Textareas: ${textareas.length}, Prompt exists: ${!!promptElement}, Active: ${activeEl?.tagName}${activeEl?.getAttribute ? ` (${activeEl.getAttribute('aria-label') || activeEl.getAttribute('data-placeholder') || 'no-label'})` : ''}, Focused textarea: ${activeEl?.tagName === 'TEXTAREA'}, Submit buttons: ${submitButtons.length}, Total buttons: ${sendButtons}`;
+                debugLog(message);
+
+                // Log each textarea's properties
+                textareas.forEach((ta, i) => {
+                    debugLog(`  Textarea ${i}: disabled=${ta.disabled}, readonly=${ta.readOnly}, value.length=${ta.value.length}, focused=${ta === activeEl}`);
+                });
+
+                // Log prompt element details
+                if (promptElement) {
+                    debugLog(`  Prompt element: ${promptElement.tagName}, contentEditable=${promptElement.contentEditable}, textContent.length=${promptElement.textContent?.length || 0}, innerHTML.length=${promptElement.innerHTML?.length || 0}`);
+                }
+
+                // Log submit buttons
+                submitButtons.forEach((btn, i) => {
+                    debugLog(`  Submit button ${i}: ${btn.tagName}, disabled=${btn.disabled}, aria-label="${btn.getAttribute('aria-label') || 'none'}", visible=${btn.offsetParent !== null}`);
+                });
+            }
+
+            // Track textarea instances
+            function trackTextarea(textarea, action) {
+                const id = textarea.getAttribute('data-debug-id') || Math.random().toString(36);
+                textarea.setAttribute('data-debug-id', id);
+                debugLog(`Textarea ${action}: ${id}`);
+                if (action === 'added') textareaInstances.add(id);
+                if (action === 'removed') textareaInstances.delete(id);
+            }
+
+            // Monitor ALL keyboard events on prompt elements (DIV or TEXTAREA)
+            document.addEventListener('keydown', function(e) {
+                const isPromptElement = e.target.tagName === 'TEXTAREA' ||
+                                      (e.target.tagName === 'DIV' && e.target.contentEditable === 'true') ||
+                                      e.target.matches('[aria-label*="Enter a prompt"], [data-placeholder*="Ask Gemini"]');
+
+                if (isPromptElement && e.key === 'Enter') {
+                    enterPressCount++;
+                    debugLog(`ENTER KEYDOWN #${enterPressCount} - Target: ${e.target.tagName}, ContentEditable: ${e.target.contentEditable}, Focused: ${e.target === document.activeElement}, Default prevented: ${e.defaultPrevented}, Shift: ${e.shiftKey}, Ctrl: ${e.ctrlKey}`);
+
+                    // Check if there's text content to submit
+                    const textContent = e.target.textContent || e.target.value || '';
+                    debugLog(`  Text content: "${textContent}" (length: ${textContent.length})`);
+
+                    logDetailedState(`Enter keydown #${enterPressCount}`);
+                }
+            }, true);
+
+            document.addEventListener('keypress', function(e) {
+                const isPromptElement = e.target.tagName === 'TEXTAREA' ||
+                                      (e.target.tagName === 'DIV' && e.target.contentEditable === 'true') ||
+                                      e.target.matches('[aria-label*="Enter a prompt"], [data-placeholder*="Ask Gemini"]');
+
+                if (isPromptElement && e.key === 'Enter') {
+                    debugLog(`ENTER KEYPRESS #${enterPressCount} - Default prevented: ${e.defaultPrevented}`);
+                }
+            }, true);
+
+            document.addEventListener('keyup', function(e) {
+                const isPromptElement = e.target.tagName === 'TEXTAREA' ||
+                                      (e.target.tagName === 'DIV' && e.target.contentEditable === 'true') ||
+                                      e.target.matches('[aria-label*="Enter a prompt"], [data-placeholder*="Ask Gemini"]');
+
+                if (isPromptElement && e.key === 'Enter') {
+                    debugLog(`ENTER KEYUP #${enterPressCount} - Default prevented: ${e.defaultPrevented}`);
+                    // Log state after keyup
+                    setTimeout(() => logDetailedState(`After Enter keyup #${enterPressCount}`), 10);
+                }
+            }, true);
+
+            // Monitor focus changes on prompt elements
+            document.addEventListener('focusin', function(e) {
+                const isPromptElement = e.target.tagName === 'TEXTAREA' ||
+                                      (e.target.tagName === 'DIV' && e.target.contentEditable === 'true') ||
+                                      e.target.matches('[aria-label*="Enter a prompt"], [data-placeholder*="Ask Gemini"]');
+
+                if (isPromptElement) {
+                    debugLog(`Prompt element FOCUS IN: ${e.target.tagName} (${e.target.getAttribute('data-debug-id') || 'new'})`);
+                    lastFocusedElement = e.target;
+                    logDetailedState('Focus in');
+                }
+            });
+
+            document.addEventListener('focusout', function(e) {
+                const isPromptElement = e.target.tagName === 'TEXTAREA' ||
+                                      (e.target.tagName === 'DIV' && e.target.contentEditable === 'true') ||
+                                      e.target.matches('[aria-label*="Enter a prompt"], [data-placeholder*="Ask Gemini"]');
+
+                if (isPromptElement) {
+                    debugLog(`Prompt element FOCUS OUT: ${e.target.tagName} (${e.target.getAttribute('data-debug-id') || 'unknown'})`);
+                    logDetailedState('Focus out');
+                }
+            });
+
+            // Monitor DOM changes
+            const observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    if (mutation.type === 'childList') {
+                        mutation.addedNodes.forEach(function(node) {
+                            if (node.nodeType === 1) {
+                                if (node.tagName === 'TEXTAREA') {
+                                    trackTextarea(node, 'added');
+                                    logDetailedState('Textarea added');
+                                } else if (node.querySelector && node.querySelector('textarea')) {
+                                    node.querySelectorAll('textarea').forEach(ta => {
+                                        trackTextarea(ta, 'added');
+                                    });
+                                    logDetailedState('Container with textarea added');
+                                }
+                            }
+                        });
+                        mutation.removedNodes.forEach(function(node) {
+                            if (node.nodeType === 1) {
+                                if (node.tagName === 'TEXTAREA') {
+                                    trackTextarea(node, 'removed');
+                                    logDetailedState('Textarea removed');
+                                } else if (node.querySelector && node.querySelector('textarea')) {
+                                    node.querySelectorAll('textarea').forEach(ta => {
+                                        trackTextarea(ta, 'removed');
+                                    });
+                                    logDetailedState('Container with textarea removed');
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            // Monitor form submissions and button clicks
+            document.addEventListener('submit', function(e) {
+                debugLog(`FORM SUBMIT detected - target: ${e.target.tagName}, action: ${e.target.action || 'none'}`);
+            }, true);
+
+            document.addEventListener('click', function(e) {
+                if (e.target.tagName === 'BUTTON' || e.target.role === 'button') {
+                    debugLog(`BUTTON CLICK - target: ${e.target.tagName}, aria-label: "${e.target.getAttribute('aria-label') || 'none'}", disabled: ${e.target.disabled}`);
+                }
+            }, true);
+
+            // Monitor for any programmatic form submissions or AJAX requests
+            const originalFetch = window.fetch;
+            window.fetch = function(...args) {
+                debugLog(`FETCH REQUEST - URL: ${args[0]}`);
+                return originalFetch.apply(this, args);
+            };
+
+            const originalXHROpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                debugLog(`XHR REQUEST - ${method} ${url}`);
+                return originalXHROpen.apply(this, arguments);
+            };
+
+            // Log initial state
+            setTimeout(() => logDetailedState('Initial state'), 1000);
         """
         user_script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(script, WKUserScriptInjectionTimeAtDocumentEnd, True)
         user_content_controller.addUserScript_(user_script)
@@ -223,6 +402,7 @@ class AppDelegate(NSObject):
 
     # Logic to show the overlay, make it the key window, and focus on the typing area.
     def showWindow_(self, sender):
+        print(f"[DEBUG] showWindow_ called (sender: {sender})", flush=True)
         self.window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
         self._focus_prompt_area()
@@ -382,6 +562,9 @@ class AppDelegate(NSObject):
                 r, g, b = [val / 255.0 for val in rgb_values[:3]]
                 color = NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 1.0)
                 self.drag_area.setBackgroundColor_(color)
+        elif message.name() == "debugLogger":
+            debug_message = message.body()
+            print(f"[JS DEBUG] {debug_message}", flush=True)
 
     # Logic for checking what color the logo in the status bar should be, and setting appropriate logo.
     def updateStatusItemImage(self):
@@ -403,6 +586,7 @@ class AppDelegate(NSObject):
 
     # WKNavigationDelegate – called when navigation finishes
     def webView_didFinishNavigation_(self, webview, navigation):
+        print(f"[DEBUG] Navigation finished, scheduling focus timer", flush=True)
         # Page loaded, focus prompt area after small delay to ensure textarea exists
         # Delay 0.1 s, then focus prompt (use NSTimer – PyObjC provides selector call)
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -410,17 +594,32 @@ class AppDelegate(NSObject):
 
     # Helper called by timer
     def _focusPromptTimerFired_(self, timer):
+        print(f"[DEBUG] Focus timer fired after navigation", flush=True)
         self._focus_prompt_area()
 
     # Python method to call JS that focuses the Gemini textarea / prompt
     @objc.python_method
     def _focus_prompt_area(self):
-        js_focus = """
-        (function(){
+        import time
+        timestamp = time.time()
+        print(f"[DEBUG] _focus_prompt_area called at {timestamp}", flush=True)
+        js_focus = f"""
+        (function(){{
+          debugLog('Python focus attempt at {timestamp}');
           const sel='[aria-label=\\"Enter a prompt here\\"], [data-placeholder=\\"Ask Gemini\\"]';
           const el=document.querySelector(sel) || document.querySelector('textarea');
-          if(el){ el.focus(); }
-        })();
+          const currentFocus = document.activeElement;
+          debugLog('Focus attempt - selector found: ' + !!document.querySelector(sel) + ', textarea found: ' + !!document.querySelector('textarea') + ', element to focus: ' + (el?.tagName || 'none') + ', currently focused: ' + (currentFocus?.tagName || 'none'));
+          if(el){{
+            debugLog('About to call focus() on element');
+            el.focus();
+            setTimeout(() => {{
+              debugLog('Focus result - now focused: ' + (document.activeElement === el) + ', active element: ' + (document.activeElement?.tagName || 'none'));
+            }}, 5);
+          }} else {{
+            debugLog('No element found to focus');
+          }}
+        }})();
         """
         self.webview.evaluateJavaScript_completionHandler_(js_focus, None)
 

@@ -192,21 +192,21 @@ def global_show_hide_listener(app):
                 handle_new_trigger(event, flags, keycode)
                 return None
 
-            # Early return for events that can't possibly be the launcher trigger
-            # This optimization reduces processing overhead for common keys like Return
-            if flags == 0 and keycode != LAUNCHER_TRIGGER["key"]:
-                # No modifier keys pressed and not the trigger key - pass through immediately
+            # CRITICAL FIX: Don't intercept ANY events when our window is the key window
+            # This prevents interference with normal keyboard input in the WebView
+            if app.window.isKeyWindow():
+                # Only process events that exactly match the launcher trigger
+                if (flags == LAUNCHER_TRIGGER["flags"]) and (keycode == LAUNCHER_TRIGGER["key"]):
+                    app.hideWindow_(None)
+                    return None
+                # For all other events (including Return), pass through without interception
                 return event
 
-            # Only intercept events that match the launcher trigger exactly
+            # When window is NOT key, only intercept launcher trigger to show window
             if (flags == LAUNCHER_TRIGGER["flags"]) and (keycode == LAUNCHER_TRIGGER["key"]):
-                if app.window.isKeyWindow():
-                    app.hideWindow_(None)
-                else:
-                    app.showWindow_(None)
+                app.showWindow_(None)
                 return None
 
         # Return the event unmodified for all other cases
-        # This ensures normal keyboard events (like Return) work properly in the WebView
         return event
     return listener
