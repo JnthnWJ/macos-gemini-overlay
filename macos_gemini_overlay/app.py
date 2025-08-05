@@ -314,6 +314,69 @@ class AppDelegate(NSObject):
 
             // Log initial state
             setTimeout(() => logDetailedState('Initial state'), 1000);
+
+            // CRITICAL FIX: Ensure Enter key properly triggers submission
+            function fixEnterKeyHandling() {
+                // Find the prompt element (contenteditable DIV)
+                const promptSelectors = '[aria-label*="Enter a prompt"], [data-placeholder*="Ask Gemini"], [contenteditable="true"]';
+                const promptElement = document.querySelector(promptSelectors);
+
+                if (promptElement && promptElement.contentEditable === 'true') {
+                    debugLog('Attaching Enter key fix to: ' + promptElement.tagName);
+
+                    // Remove any existing event listeners to avoid duplicates
+                    promptElement.removeEventListener('keydown', handleEnterKeyFix);
+
+                    // Add our Enter key handler with highest priority
+                    promptElement.addEventListener('keydown', handleEnterKeyFix, { capture: true, passive: false });
+                }
+            }
+
+            function handleEnterKeyFix(event) {
+                if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+                    debugLog('Enter key fix triggered - looking for submit button');
+
+                    // Find and click the send button
+                    const sendButton = document.querySelector('button[aria-label*="Send"], button[data-testid*="send"], [role="button"][aria-label*="Send"]');
+
+                    if (sendButton && !sendButton.disabled && sendButton.offsetParent !== null) {
+                        debugLog('Clicking send button via Enter key fix');
+                        event.preventDefault();
+                        event.stopImmediatePropagation();
+
+                        // Trigger click after a tiny delay to ensure proper event handling
+                        setTimeout(() => sendButton.click(), 1);
+                        return false;
+                    } else {
+                        debugLog('No enabled/visible send button found for Enter key fix');
+                    }
+                }
+            }
+
+            // Apply the fix when DOM is ready and after mutations
+            setTimeout(fixEnterKeyHandling, 1500);
+
+            // Re-apply when DOM changes (in case Gemini recreates elements)
+            const enterKeyObserver = new MutationObserver(function(mutations) {
+                let shouldReapply = false;
+                mutations.forEach(function(mutation) {
+                    if (mutation.type === 'childList') {
+                        mutation.addedNodes.forEach(function(node) {
+                            if (node.nodeType === 1 && (
+                                (node.matches && node.matches('[contenteditable="true"]')) ||
+                                (node.querySelector && node.querySelector('[contenteditable="true"]'))
+                            )) {
+                                shouldReapply = true;
+                            }
+                        });
+                    }
+                });
+                if (shouldReapply) {
+                    debugLog('DOM changed, reapplying Enter key fix');
+                    setTimeout(fixEnterKeyHandling, 200);
+                }
+            });
+            enterKeyObserver.observe(document.body, { childList: true, subtree: true });
         """
         user_script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(script, WKUserScriptInjectionTimeAtDocumentEnd, True)
         user_content_controller.addUserScript_(user_script)
